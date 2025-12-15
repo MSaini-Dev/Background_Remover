@@ -1,0 +1,65 @@
+# ----------------------
+# Node.js
+# ----------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ----------------------
+# React / Vite
+# ----------------------
+dist/
+build/
+.vite/
+
+# ----------------------
+# Environment variables
+# ----------------------
+.env
+.env.*
+!.env.example
+
+# ----------------------
+# Uploads & generated files
+# ----------------------
+uploads/
+outputs/
+*.png
+*.jpg
+*.jpeg
+
+# ----------------------
+# Python
+# ----------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.pt
+*.pth
+
+# ----------------------
+# OS / Editor
+# ----------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ----------------------
+# Logs
+# ----------------------
+logs/
+*.log
+
+# ----------------------
+# Misc
+# ----------------------
+coverage/
+.tmp/
+.cache/
