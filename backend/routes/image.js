@@ -3,7 +3,7 @@ const multer = require("multer");
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
-const uuidv4 = require("uuid").v4; // Change this line
+const uuidv4 = require("uuid").v4;
 const cors = require("cors");
 
 const router = express.Router();
@@ -26,7 +26,7 @@ const storage = multer.diskStorage({
     cb(null, 'uploads/');
   },
   filename: (req, file, cb) => {
-   const uniqueId = uuidv4();
+    const uniqueId = uuidv4();
     const ext = path.extname(file.originalname);
     cb(null, `${uniqueId}${ext}`);
   }
@@ -78,8 +78,11 @@ router.post("/upload", upload.single("image"), handleMulterError, async (req, re
   }
 });
 
-// 2️⃣ Process image
+// 2️⃣ Process image - FIXED VERSION
 router.post("/process", async (req, res) => {
+  let inputPath = null;
+  let outputPath = null;
+
   try {
     const { uploadId } = req.body;
 
@@ -95,88 +98,156 @@ router.post("/process", async (req, res) => {
       return res.status(404).json({ error: "Image not found" });
     }
 
-    const inputPath = path.join("uploads", inputFile);
+    inputPath = path.join("uploads", inputFile);
     
     // Check if file exists
     if (!fs.existsSync(inputPath)) {
       return res.status(404).json({ error: "Image file not found" });
     }
 
+    console.log(`Processing image: ${inputFile}`);
+    console.log(`AI Service URL: ${process.env.AI_SERVICE_URL}`);
+
     // Prepare form data for AI service
     const FormData = require('form-data');
     const formData = new FormData();
     formData.append('image', fs.createReadStream(inputPath));
 
-    // Call AI service
+    // Call AI service with proper timeout and error handling
     const response = await axios.post(
-      process.env.AI_SERVICE_URL + "/remove-bg",
+      `${process.env.AI_SERVICE_URL}/remove-bg`,
       formData,
       {
-        headers: {
-          ...formData.getHeaders(),
-          'Content-Type': 'multipart/form-data'
-        },
-        responseType: "stream"
+        headers: formData.getHeaders(),
+        responseType: "stream",
+        timeout: 120000, // 120 seconds timeout - CRITICAL FIX
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        validateStatus: function (status) {
+          return status >= 200 && status < 500; // Don't throw on 4xx/5xx
+        }
       }
     );
+
+    // Check if response was successful
+    if (response.status !== 200) {
+      console.error(`AI service returned status ${response.status}`);
+      
+      // Try to read error message from stream
+      let errorMsg = `AI service error (${response.status})`;
+      try {
+        const chunks = [];
+        for await (const chunk of response.data) {
+          chunks.push(chunk);
+        }
+        const body = Buffer.concat(chunks).toString();
+        const parsed = JSON.parse(body);
+        errorMsg = parsed.error || errorMsg;
+      } catch (e) {
+        // Couldn't parse error
+      }
+      
+      return res.status(response.status).json({ error: errorMsg });
+    }
 
     // Create output directory if it doesn't exist
     if (!fs.existsSync("outputs")) {
       fs.mkdirSync("outputs", { recursive: true });
     }
 
-    const outputPath = path.join("outputs", `${uploadId}_processed.png`);
+    outputPath = path.join("outputs", `${uploadId}_processed.png`);
     const writer = fs.createWriteStream(outputPath);
     
+    // Pipe the response to file
     response.data.pipe(writer);
 
-    writer.on("finish", () => {
-      // Send the processed file
-      res.download(outputPath, `${uploadId}_processed.png`, (err) => {
-        // Cleanup files after sending (or on error)
-        try {
-          if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-          if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-        } catch (cleanupErr) {
-          console.error("Cleanup error:", cleanupErr);
-        }
-        
-        if (err) {
-          console.error("Download error:", err);
-          if (!res.headersSent) {
-            res.status(500).json({ error: "Failed to send file" });
-          }
-        }
-      });
+    // Handle stream completion
+    await new Promise((resolve, reject) => {
+      writer.on("finish", resolve);
+      writer.on("error", reject);
+      response.data.on("error", reject);
     });
 
-    writer.on("error", (err) => {
-      console.error("Write stream error:", err);
-      res.status(500).json({ error: "Failed to save processed image" });
+    console.log(`Image processed successfully: ${outputPath}`);
+
+    // Send the processed file
+    res.download(outputPath, `${uploadId}_processed.png`, (err) => {
+      // Cleanup files after sending
+      try {
+        if (inputPath && fs.existsSync(inputPath)) {
+          fs.unlinkSync(inputPath);
+          console.log(`Cleaned up input: ${inputPath}`);
+        }
+        if (outputPath && fs.existsSync(outputPath)) {
+          fs.unlinkSync(outputPath);
+          console.log(`Cleaned up output: ${outputPath}`);
+        }
+      } catch (cleanupErr) {
+        console.error("Cleanup error:", cleanupErr);
+      }
+      
+      if (err && !res.headersSent) {
+        console.error("Download error:", err);
+        res.status(500).json({ error: "Failed to send file" });
+      }
     });
 
   } catch (err) {
     console.error("Processing error:", err);
     
-    if (err.response) {
-      // The AI service returned an error
+    // Cleanup on error
+    try {
+      if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+      if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    } catch (cleanupErr) {
+      console.error("Error cleanup failed:", cleanupErr);
+    }
+    
+    if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT') {
+      return res.status(504).json({ 
+        error: "AI service timeout - image processing took too long. Try a smaller image." 
+      });
+    } else if (err.response) {
       return res.status(err.response.status).json({ 
         error: err.response.data?.error || "AI service error" 
       });
     } else if (err.request) {
-      // No response received
-      return res.status(503).json({ error: "AI service unavailable" });
+      return res.status(503).json({ 
+        error: "AI service unavailable - please try again later" 
+      });
     } else {
-      // Other errors
-      return res.status(500).json({ error: "Processing failed: " + err.message });
+      return res.status(500).json({ 
+        error: "Processing failed: " + err.message 
+      });
     }
+  }
+});
+
+// Health check endpoint
+router.get("/health", async (req, res) => {
+  try {
+    // Check if AI service is reachable
+    const response = await axios.get(
+      `${process.env.AI_SERVICE_URL}/health`,
+      { timeout: 5000 }
+    );
+    
+    res.json({ 
+      status: "ok",
+      aiService: response.data 
+    });
+  } catch (error) {
+    res.status(503).json({ 
+      status: "degraded",
+      error: "AI service unavailable" 
+    });
   }
 });
 
 // Optional: Add a cleanup route to remove old files
 router.post("/cleanup", async (req, res) => {
   try {
-    const { hours = 24 } = req.body; // Default: files older than 24 hours
+    const { hours = 24 } = req.body;
     
     const now = Date.now();
     const cutoff = now - (hours * 60 * 60 * 1000);
@@ -184,26 +255,30 @@ router.post("/cleanup", async (req, res) => {
     let deletedCount = 0;
     
     // Clean uploads directory
-    const uploadFiles = fs.readdirSync("uploads");
-    uploadFiles.forEach(file => {
-      const filePath = path.join("uploads", file);
-      const stats = fs.statSync(filePath);
-      if (stats.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-        deletedCount++;
-      }
-    });
+    if (fs.existsSync("uploads")) {
+      const uploadFiles = fs.readdirSync("uploads");
+      uploadFiles.forEach(file => {
+        const filePath = path.join("uploads", file);
+        const stats = fs.statSync(filePath);
+        if (stats.mtimeMs < cutoff) {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+        }
+      });
+    }
     
     // Clean outputs directory
-    const outputFiles = fs.readdirSync("outputs");
-    outputFiles.forEach(file => {
-      const filePath = path.join("outputs", file);
-      const stats = fs.statSync(filePath);
-      if (stats.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-        deletedCount++;
-      }
-    });
+    if (fs.existsSync("outputs")) {
+      const outputFiles = fs.readdirSync("outputs");
+      outputFiles.forEach(file => {
+        const filePath = path.join("outputs", file);
+        const stats = fs.statSync(filePath);
+        if (stats.mtimeMs < cutoff) {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+        }
+      });
+    }
     
     res.json({ 
       success: true, 
