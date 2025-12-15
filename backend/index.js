@@ -1,7 +1,8 @@
-import express from "express";
-import cors from "cors";
-import imageRoutes from "./routes/image.js";
-import rateLimit from "express-rate-limit";
+const express = require("express");
+const cors = require("cors");
+const rateLimit = require("express-rate-limit");
+const image = require("./routes/image");
+require("dotenv").config(); // Add this line
 
 const app = express();
 
@@ -14,7 +15,7 @@ app.use(rateLimit({
   max: 50
 }));
 
-app.use("/api/image", imageRoutes);
+app.use("/api/image", image);
 
 app.get("/", (_, res) => {
   res.send("Backend running");
@@ -23,4 +24,5 @@ app.get("/", (_, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
+  console.log("AI Service URL:", process.env.AI_SERVICE_URL);
 });
