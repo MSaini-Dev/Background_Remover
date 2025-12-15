@@ -1,79 +1,88 @@
-# from flask import Flask, request, send_file
-# from flask_cors import CORS
-# from rembg import remove
-# from PIL import Image
-# import io
-# import os
-# app = Flask(__name__)
-# CORS(app)
-# @app.route("/remove-bg", methods=["POST"])
-# def remove_bg():
-#     try:
-#         if "image" not in request.files:
-#             return {"error": "No image provided"}, 400
-        
-#         file = request.files["image"]
-#         if file.filename == "":
-#             return {"error": "No file selected"}, 400
-        
-#         # Read image file
-#         input_image = Image.open(file.stream)
-        
-#         # Remove background using rembg
-#         output_image = remove(input_image)
-        
-#         # Save to bytes
-#         output_bytes = io.BytesIO()
-#         output_image.save(output_bytes, format="PNG")
-#         output_bytes.seek(0)
-        
-#         return send_file(output_bytes, mimetype="image/png")
-        
-#     except Exception as e:
-#         print(f"Error: {str(e)}")
-#         return {"error": str(e)}, 500
-
-# if __name__ == "__main__":
-#     app.run(host="0.0.0.0", port=5001, debug=True)
-
-
-
-
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from rembg import remove
 from PIL import Image
 import io
 import os
+import logging
+import time
 
 app = Flask(__name__)
 CORS(app)
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 @app.route("/remove-bg", methods=["POST"])
 def remove_bg():
+    start_time = time.time()
+    
     try:
+        logger.info("Received background removal request")
+        
         if "image" not in request.files:
-            return {"error": "No image provided"}, 400
+            logger.error("No image in request")
+            return jsonify({"error": "No image provided"}), 400
         
         file = request.files["image"]
         if file.filename == "":
-            return {"error": "No file selected"}, 400
+            logger.error("Empty filename")
+            return jsonify({"error": "No file selected"}), 400
         
+        logger.info(f"Processing image: {file.filename}")
+        
+        # Read and validate image
         input_image = Image.open(file.stream)
-
+        logger.info(f"Image size: {input_image.size}, mode: {input_image.mode}")
+        
+        # Remove background
+        logger.info("Starting background removal...")
         output_image = remove(input_image)
-
+        
+        elapsed = time.time() - start_time
+        logger.info(f"Background removal complete in {elapsed:.2f}s")
+        
+        # Convert to bytes
         output_bytes = io.BytesIO()
         output_image.save(output_bytes, format="PNG")
         output_bytes.seek(0)
-
-        return send_file(output_bytes, mimetype="image/png")
-
+        
+        logger.info("Sending processed image")
+        return send_file(
+            output_bytes, 
+            mimetype="image/png",
+            as_attachment=False,
+            download_name=f"processed_{file.filename}"
+        )
+        
     except Exception as e:
-        return {"error": str(e)}, 500
+        elapsed = time.time() - start_time
+        logger.error(f"Error after {elapsed:.2f}s: {str(e)}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
-
-# Health check (recommended)
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok"}
+    return jsonify({
+        "status": "ok", 
+        "service": "background-remover",
+        "version": "1.0"
+    })
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "message": "Background Removal Service", 
+        "status": "running",
+        "endpoints": {
+            "/remove-bg": "POST - Remove background from image",
+            "/health": "GET - Health check"
+        }
+    })
+
+if __name__ == "__main__":
+    # For local development only
+    app.run(host="0.0.0.0", port=10000, debug=False)
